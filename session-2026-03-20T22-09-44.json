@@ -1,0 +1,15 @@
+{
+  "session_start": "2026-03-20T22:03:00.527Z",
+  "session_end": "2026-03-20T22:09:44.011Z",
+  "analyzed": 15,
+  "signals": 5,
+  "rugs_avoided": 10,
+  "x402_spent": 0,
+  "lifetime": {
+    "total_sessions": 2,
+    "total_analyzed": 28,
+    "total_signals": 9,
+    "total_rugs_avoided": 19,
+    "total_x402_spent": 0
+  }
+}

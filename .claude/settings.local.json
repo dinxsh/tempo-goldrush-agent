@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm view:*)",
+      "Bash(npx tsc:*)",
+      "Bash(node -e \"const sdk = require\\(''@covalenthq/client-sdk''\\); console.log\\(Object.keys\\(sdk\\).slice\\(0,20\\)\\)\")",
+      "Bash(node -e \"const { Client } = require\\(''@covalenthq/client-sdk''\\); console.log\\(typeof Client\\); const c = new Client\\(''test''\\); console.log\\(Object.keys\\(c\\)\\)\")",
+      "Bash(node -e \"const { Client } = require\\(''@covalenthq/client-sdk''\\); const c = new Client\\(''test''\\); console.log\\(''Balance:'', typeof c.BalanceService.getTokenHoldersForTokenAddress\\); console.log\\(''Streaming:'', typeof c.StreamingService\\)\")",
+      "Bash(node -e \"const { Client } = require\\(''@covalenthq/client-sdk''\\); const c = new Client\\(''test''\\); const bs = c.BalanceService; console.log\\(Object.getOwnPropertyNames\\(Object.getPrototypeOf\\(bs\\)\\)\\)\")",
+      "Bash(node -e \"const { Client } = require\\(''@covalenthq/client-sdk''\\); const c = new Client\\(''test''\\); [''SecurityService'',''PricingService'',''TransactionService'',''XykService'',''BaseService'',''NftService''].forEach\\(s => { const svc = c[s]; if\\(svc\\) console.log\\(s+'':'', Object.getOwnPropertyNames\\(Object.getPrototypeOf\\(svc\\)\\).filter\\(n => n !== ''constructor''\\)\\) }\\)\")"
+    ]
+  }
+}
