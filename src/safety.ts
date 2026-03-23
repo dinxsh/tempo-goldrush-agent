@@ -1,11 +1,11 @@
 import { Client } from "@covalenthq/client-sdk";
 import type { NewPair } from "./stream";
-import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { base } from "viem/chains";
 
 // @ts-ignore — no types
 import { isERC20Spam, Networks, Confidence } from "@covalenthq/goldrush-enhanced-spam-lists";
+// @ts-ignore — no types
+import { Mppx, tempo } from "mppx/client";
 
 export interface SafetyResult {
   spam_score: "LOW" | "MEDIUM" | "HIGH" | "UNKNOWN";
@@ -24,39 +24,34 @@ export type ProgressField = "holders" | "spam" | "price" | "deployer";
 export type ProgressCallback = (field: ProgressField, ms: number) => void;
 
 const CHAIN = "base-mainnet";
-const X402_ENDPOINT = "https://goldrush-x402.vercel.app/v1/x402/";
+const GOLDRUSH_SAFETY_ENDPOINT = "https://goldrush-x402.vercel.app/v1/base-mainnet/tokens/";
 
-async function makeX402Payment(privateKey: string): Promise<string> {
-  const account = privateKeyToAccount(privateKey as `0x${string}`);
-  const walletClient = createWalletClient({
-    account,
-    chain: base,
-    transport: http(),
-  }).extend(publicActions);
+// ── MPP client factory ──────────────────────────────────────────────
+// Call once at startup — authorize a session on Tempo, then reuse for every
+// GoldRush query. Each mppx.fetch() streams a voucher, no extra on-chain tx.
+export function createMppxClient(privateKey: string) {
+  const account      = privateKeyToAccount(privateKey as `0x${string}`);
+  const sessionLimit = process.env.TEMPO_SESSION_LIMIT ?? "1.00";
 
-  const resp = await fetch(X402_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ amount: "0.01", currency: "USDC", chain: "base" }),
+  return Mppx.create({
+    methods: [
+      tempo({
+        account,
+        deposit: sessionLimit,  // pre-authorized USDC deposited into Tempo escrow
+      }),
+    ],
   });
-
-  if (!resp.ok) return "";
-
-  const data = (await resp.json()) as Record<string, unknown>;
-  const to = data["to"] as `0x${string}` | undefined;
-  const value = BigInt((data["value"] as string | number | undefined) ?? 0);
-
-  if (!to) return "";
-
-  return await walletClient.sendTransaction({ to, value, data: "0x" });
 }
+
+export type MppxClient = ReturnType<typeof createMppxClient>;
 
 export async function analyzeSafety(
   client: Client,
   pair: NewPair,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  mppxClient?: MppxClient
 ): Promise<SafetyResult> {
-  const start = Date.now();
+  const start    = Date.now();
   const contract = pair.contract;
 
   // ── holders ────────────────────────────────────────────────────────
@@ -95,11 +90,11 @@ export async function analyzeSafety(
   const pricePromise = (async () => {
     const t = Date.now();
     try {
-      const now = new Date();
+      const now       = new Date();
       const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      const result = await client.PricingService.getTokenPrices(CHAIN, "USD", contract, {
+      const result    = await client.PricingService.getTokenPrices(CHAIN, "USD", contract, {
         from: yesterday.toISOString().slice(0, 10),
-        to: now.toISOString().slice(0, 10),
+        to:   now.toISOString().slice(0, 10),
       });
       onProgress?.("price", Date.now() - t);
       return result;
@@ -134,14 +129,14 @@ export async function analyzeSafety(
   ]);
 
   // ── process holders ─────────────────────────────────────────────────
-  let holders = holderItems.length;
+  let holders            = holderItems.length;
   let top_10_concentration = 0;
   if (holderItems.length > 0) {
     const sorted = [...holderItems].sort(
       (a, b) => Number(b.balance ?? 0n) - Number(a.balance ?? 0n)
     );
-    const total = sorted.reduce((s, h) => s + Number(h.balance ?? 0n), 0);
-    const top10 = sorted.slice(0, 10).reduce((s, h) => s + Number(h.balance ?? 0n), 0);
+    const total  = sorted.reduce((s, h) => s + Number(h.balance ?? 0n), 0);
+    const top10  = sorted.slice(0, 10).reduce((s, h) => s + Number(h.balance ?? 0n), 0);
     if (total > 0) top_10_concentration = (top10 / total) * 100;
   }
 
@@ -170,16 +165,23 @@ export async function analyzeSafety(
   if (holders > 0 && holders < 50)     rug_signals.push("low holders");
 
   let spam_score: SafetyResult["spam_score"] = "LOW";
-  if (spam.high)                              spam_score = "HIGH";
+  if (spam.high)                                   spam_score = "HIGH";
   else if (spam.maybe || top_10_concentration > 60) spam_score = "MEDIUM";
 
-  // ── x402 payment ───────────────────────────────────────────────────
+  // ── MPP payment — pay for GoldRush intelligence via Tempo MPP session ─
+  // Uses the pre-authorized session client (created once at startup).
+  // Each call signs a voucher off-chain — no extra on-chain transaction.
   let payment_made = false, payment_tx = "";
-  if (process.env.GOLDRUSH_X402_MODE === "true" && process.env.AGENT_PRIVATE_KEY) {
+  if (mppxClient) {
     try {
-      const hash = await makeX402Payment(process.env.AGENT_PRIVATE_KEY);
-      if (hash) { payment_made = true; payment_tx = hash; }
-    } catch { /* fail open */ }
+      const endpoint = `${GOLDRUSH_SAFETY_ENDPOINT}${contract}/safety`;
+      const response = await mppxClient.fetch(endpoint);
+      const receipt  = response.headers.get("MPP-Receipt");
+      if (response.ok || receipt) {
+        payment_made = true;
+        payment_tx   = receipt ?? "mpp-session";
+      }
+    } catch { /* fail open — continue with API key mode */ }
   }
 
   return {

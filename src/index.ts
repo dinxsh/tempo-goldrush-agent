@@ -4,7 +4,7 @@ import blessed from "blessed";
 import contrib from "blessed-contrib";
 import { Client } from "@covalenthq/client-sdk";
 import { startPairStream, type NewPair } from "./stream";
-import { analyzeSafety, type ProgressField } from "./safety";
+import { analyzeSafety, createMppxClient, type ProgressField, type MppxClient } from "./safety";
 import {
   showStartupSequence,
   updateHeader,
@@ -24,6 +24,7 @@ import {
   type Stats,
 } from "./display";
 import { loadCounters, saveCounters, saveSession, type Counters } from "./counters";
+import { alertRug, alertSignal, alertSessionSummary } from "./telegram";
 
 // ── env ──────────────────────────────────────────────────────────────
 const API_KEY = process.env.GOLDRUSH_API_KEY;
@@ -32,6 +33,18 @@ if (!API_KEY) {
   process.exit(1);
 }
 const client = new Client(API_KEY);
+
+// ── MPP client (singleton) ────────────────────────────────────────────
+// Created once at startup — session is authorized on Tempo chain once,
+// then each analyzeSafety() call streams a voucher with no extra on-chain tx.
+let mppxClient: MppxClient | undefined;
+if (process.env.MPP_MODE === "true" && process.env.TEMPO_WALLET_KEY) {
+  try {
+    mppxClient = createMppxClient(process.env.TEMPO_WALLET_KEY);
+  } catch (e) {
+    console.error("MPP init failed, running in API key mode:", e);
+  }
+}
 
 // ── wallet balance ────────────────────────────────────────────────────
 async function getWalletBalance(address: string): Promise<string> {
@@ -58,14 +71,14 @@ async function init() {
   } catch { /* show 0 */ }
 
   // ── startup animation ─────────────────────────────────────────────
-  await showStartupSequence(counters, blockHeight);
+  await showStartupSequence(counters, blockHeight, !!mppxClient);
 
   // ── wallet address ────────────────────────────────────────────────
   let walletAddress = "0x0000...0000";
-  if (process.env.AGENT_PRIVATE_KEY?.startsWith("0x") && process.env.AGENT_PRIVATE_KEY.length >= 66) {
+  if (process.env.TEMPO_WALLET_KEY?.startsWith("0x") && process.env.TEMPO_WALLET_KEY.length >= 66) {
     try {
       const { privateKeyToAccount } = await import("viem/accounts");
-      walletAddress = privateKeyToAccount(process.env.AGENT_PRIVATE_KEY as `0x${string}`).address;
+      walletAddress = privateKeyToAccount(process.env.TEMPO_WALLET_KEY as `0x${string}`).address;
     } catch { /* keep default */ }
   }
 
@@ -154,7 +167,7 @@ async function init() {
   const liquidityHistory: number[] = [];
   const stats: Stats = {
     analyzed: 0, signals: 0, rugsAvoided: 0,
-    x402Spent: 0, startTime: Date.now(),
+    mppSpent: 0, startTime: Date.now(),
   };
 
   let streamLive  = false;
@@ -192,7 +205,7 @@ async function init() {
       screen.render();
     };
 
-    const safety = await analyzeSafety(client, pair, onProgress);
+    const safety = await analyzeSafety(client, pair, onProgress, mppxClient);
     clearInterval(animInterval);
 
     const isSignal = safety.spam_score === "LOW" && safety.rug_signals.length === 0;
@@ -200,7 +213,7 @@ async function init() {
     stats.analyzed++;
     if (isSignal)                        stats.signals++;
     else if (safety.rug_signals.length > 0) stats.rugsAvoided++;
-    if (safety.payment_made)             stats.x402Spent += 0.01;
+    if (safety.payment_made)             stats.mppSpent += 0.01;
 
     // Signal: terminal bell
     if (isSignal) process.stdout.write("\x07");
@@ -217,11 +230,15 @@ async function init() {
       showClusterTakeover(screen, pair, safety);
     }
 
+    // Telegram push notifications (non-blocking)
+    if (safety.rug_signals.length >= 2) alertRug(pair, safety).catch(() => {});
+    else if (isSignal)                   alertSignal(pair, safety).catch(() => {});
+
     // Persist counters
     counters.total_analyzed++;
     if (isSignal)                        counters.total_signals++;
     else if (safety.rug_signals.length > 0) counters.total_rugs_avoided++;
-    if (safety.payment_made)             counters.total_x402_spent += 0.01;
+    if (safety.payment_made)             counters.total_mpp_spent += 0.01;
     saveCounters(counters);
 
     updateSafetyPanel(safetyBox, pair, safety, false);
@@ -291,21 +308,37 @@ async function init() {
     // Persist session
     counters.total_sessions++;
     saveCounters(counters);
-    saveSession(counters, stats);
+    saveSession(counters, { ...stats, mppSpent: stats.mppSpent });
 
     const elapsed = fmtUptime(Date.now() - stats.startTime);
-    console.log(`\n╔══════════════════════════════╗`);
-    console.log(`║    ⬡  TEMPO  SESSION DONE    ║`);
-    console.log(`╠══════════════════════════════╣`);
-    console.log(`║  analyzed:     ${String(stats.analyzed).padEnd(14)}║`);
-    console.log(`║  signals:      ${String(stats.signals).padEnd(14)}║`);
-    console.log(`║  rugs avoided: ${String(stats.rugsAvoided).padEnd(14)}║`);
-    console.log(`║  x402 spent:   $${String(stats.x402Spent.toFixed(2) + " USDC").padEnd(13)}║`);
-    console.log(`║  uptime:       ${elapsed.padEnd(14)}║`);
-    console.log(`╠══════════════════════════════╣`);
-    console.log(`║  lifetime rugs: ${String(counters.total_rugs_avoided).padEnd(13)}║`);
-    console.log(`║  lifetime x402: $${String(counters.total_x402_spent.toFixed(2) + " USDC").padEnd(12)}║`);
-    console.log(`╚══════════════════════════════╝\n`);
+    const W = 38;
+    const pad = (s: string, n: number) => String(s).padEnd(n);
+
+    console.log(`\n╔${"═".repeat(W)}╗`);
+    console.log(`║${"  ⬡  TEMPO × MPP  ·  SESSION DONE  ".padEnd(W)}║`);
+    console.log(`╠${"═".repeat(W)}╣`);
+    console.log(`║  analyzed:       ${pad(stats.analyzed, W - 20)}║`);
+    console.log(`║  signals:        ${pad(stats.signals, W - 20)}║`);
+    console.log(`║  rugs blocked:   ${pad(stats.rugsAvoided, W - 20)}║`);
+    console.log(`║  mpp spent:      ${pad("$" + stats.mppSpent.toFixed(2) + " USDC  via Tempo", W - 20)}║`);
+    console.log(`║  uptime:         ${pad(elapsed, W - 20)}║`);
+    console.log(`╠${"═".repeat(W)}╣`);
+    console.log(`║  lifetime rugs:  ${pad(counters.total_rugs_avoided, W - 20)}║`);
+    console.log(`║  lifetime mpp:   ${pad("$" + counters.total_mpp_spent.toFixed(2) + " USDC", W - 20)}║`);
+    console.log(`╠${"═".repeat(W)}╣`);
+    console.log(`║  powered by GoldRush  ·  settled on Tempo  ${" ".repeat(W - 44)}║`);
+    console.log(`╚${"═".repeat(W)}╝\n`);
+
+    // Send Telegram session summary (non-blocking)
+    alertSessionSummary({
+      analyzed:    stats.analyzed,
+      signals:     stats.signals,
+      rugsAvoided: stats.rugsAvoided,
+      mppSpent:    stats.mppSpent,
+      uptime:      elapsed,
+      session:     counters.total_sessions,
+    }).catch(() => {});
+
     process.exit(0);
   });
 

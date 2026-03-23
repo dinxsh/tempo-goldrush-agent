@@ -53,7 +53,8 @@ export function fmtUptime(ms: number): string {
 // ── startup sequence ─────────────────────────────────────────────────
 export async function showStartupSequence(
   counters: Counters,
-  blockHeight: number
+  blockHeight: number,
+  mppEnabled = false
 ): Promise<void> {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const W     = Math.min(process.stdout.columns || 80, 80);
@@ -63,24 +64,38 @@ export async function showStartupSequence(
   const dim   = (s: string) => chalk.hex(C.muted)(s);
   const a     = (s: string) => chalk.hex(C.amber)(s);
   const check = g("  ✓  ");
+  const arrow = a("  →  ");
 
   process.stdout.write("\x1b[2J\x1b[H");
   console.log("");
   console.log(line);
-  console.log("  " + g("⬡") + "  " + w("TEMPO") + "  " + dim("× GoldRush Intelligence"));
+  console.log(
+    "  " + g("⬡") + "  " + w("TEMPO") +
+    "  " + dim("×") + "  " + a("MPP") +
+    "  " + dim("×") + "  " + w("GoldRush")
+  );
+  console.log("  " + dim("machine payments protocol  ·  autonomous token intelligence"));
   console.log(line);
   console.log("");
+  await sleep(200);
+
+  console.log(check + dim("goldrush api ") + g("connected"));
+  await sleep(200);
+  console.log(check + dim("base mainnet  ·  block ") + w(blockHeight.toLocaleString()));
+  await sleep(220);
+  console.log(check + dim("spam intelligence ") + g("loaded"));
   await sleep(180);
 
-  console.log(check + dim("goldrush api ")       + g("connected"));
-  await sleep(180);
-  console.log(check + dim("base mainnet  ·  block ") + w(blockHeight.toLocaleString()));
-  await sleep(250);
-  console.log(check + dim("spam intelligence ") + g("ready"));
-  await sleep(180);
-  console.log(check + dim(`session `) + w(`#${counters.total_sessions + 1}`) + dim("  ·  agent online"));
-  await sleep(180);
-  console.log(check + g("streaming") + dim(" for new pairs on base mainnet..."));
+  if (mppEnabled) {
+    console.log(arrow + a("tempo mpp ") + dim("session initializing..."));
+    await sleep(600);
+    console.log(check + a("tempo mpp ") + g("session authorized  ·  streaming micropayments ready"));
+  } else {
+    console.log(check + dim("mpp mode  ·  ") + dim("api key (set MPP_MODE=true to enable)"));
+  }
+  await sleep(200);
+
+  console.log(check + dim("session ") + w(`#${counters.total_sessions + 1}`) + dim("  ·  agent online"));
   await sleep(400);
 
   console.log("");
@@ -88,17 +103,21 @@ export async function showStartupSequence(
 
   if (counters.total_analyzed > 0) {
     const rugs = w(counters.total_rugs_avoided.toLocaleString());
-    const cost = g(`$${counters.total_x402_spent.toFixed(2)}`);
-    console.log("  " + a("lifetime  ") + rugs + dim(" rugs flagged  ·  ") + cost + dim(" x402 spent"));
+    const cost = a(`$${counters.total_mpp_spent.toFixed(2)}`);
+    console.log(
+      "  " + a("lifetime  ") +
+      rugs + dim(" rugs blocked  ·  ") +
+      cost + dim(" via tempo mpp")
+    );
   } else {
-    console.log("  " + dim("first session  ·  history will accumulate here"));
+    console.log("  " + dim("first session  ·  lifetime stats will accumulate here"));
   }
 
   console.log(line);
   console.log("");
-  await sleep(500);
-  console.log("  " + dim("launching dashboard..."));
-  await sleep(700);
+  await sleep(400);
+  console.log("  " + dim("launching dashboard  ·  streaming token launches from Base..."));
+  await sleep(600);
 
   process.stdout.write("\x1b[2J\x1b[H");
 }
@@ -125,7 +144,7 @@ export function updateHeader(
       _dot = !_dot;
       const dot    = _dot ? `{#00ff88-fg}●{/}` : `{#333333-fg}●{/}`;
       const status = _isLive
-        ? `${dot} {bold}LIVE · BASE MAINNET{/bold}`
+        ? `${dot} {bold}LIVE · TEMPO MPP AGENT{/bold}`
         : `{#ffaa00-fg}◌ RECONNECTING...{/}`;
       const short  = _wallet.length > 12
         ? _wallet.slice(0, 6) + "..." + _wallet.slice(-4)
@@ -231,8 +250,8 @@ export function updateSafetyLoading(
     : pair.contract;
   const f = state.animFrame;
 
-  const x402line = process.env.GOLDRUSH_X402_MODE === "true"
-    ? ` {#ffaa00-fg}⊕ x402 payment pending...{/}\n`
+  const mppline = process.env.MPP_MODE === "true"
+    ? ` {#ffaa00-fg}⊕ mpp payment pending...{/}\n`
     : "";
 
   box.setContent(
@@ -243,7 +262,7 @@ export function updateSafetyLoading(
     ` {#555555-fg}spam       {/}${progBar(state.spam,     f, state.spam_ms)}\n` +
     ` {#555555-fg}price hist {/}${progBar(state.price,    f, state.price_ms)}\n` +
     ` {#555555-fg}deployer   {/}${progBar(state.deployer, f, state.deployer_ms)}\n\n` +
-    x402line +
+    mppline +
     ` {#555555-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/}\n`
   );
   box.screen?.render();
@@ -286,8 +305,11 @@ export function updateSafetyPanel(
     ? safety.rug_signals.map((s) => `  {#ff4444-fg}⚠  ${s}{/}`).join("\n")
     : `  {#00ff88-fg}✓  none detected{/}`;
 
-  const x402line = safety.payment_made
-    ? ` {#ffaa00-fg}⊕ x402 · $0.01 USDC · tx: ${safety.payment_tx.slice(0, 10)}...{/}\n`
+  const receiptDisplay = safety.payment_tx.startsWith("0x")
+    ? `tempo: ${safety.payment_tx.slice(0, 10)}...`
+    : safety.payment_tx;   // "mpp-session" or similar
+  const mppline = safety.payment_made
+    ? ` {#ffaa00-fg}⊕ mpp · $0.01 USDC · ${receiptDisplay}{/}\n`
     : "";
 
   const verdict = isSignal
@@ -308,7 +330,7 @@ export function updateSafetyPanel(
     ` {#555555-fg}DEPLOYER  {/}{#e0e0e0-fg}${age} old{/}\n` +
     ` {#555555-fg}VOLATIL   {/}{#e0e0e0-fg}${vol}%{/}\n\n` +
     ` {#555555-fg}RUG SIGNALS:{/}\n${signals}\n\n` +
-    x402line +
+    mppline +
     ` {#555555-fg}goldrush: ${safety.fetch_time_ms}ms{/}\n` +
     ` {#555555-fg}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{/}` +
     verdict
@@ -389,7 +411,7 @@ export interface Stats {
   analyzed:    number;
   signals:     number;
   rugsAvoided: number;
-  x402Spent:   number;
+  mppSpent:    number;
   startTime:   number;
 }
 
@@ -402,7 +424,7 @@ export function updateStats(box: blessed.Widgets.BoxElement, stats: Stats): void
     `  {#555555-fg}signals:{/} {#00ff88-fg}{bold}${stats.signals}{/bold}{/}` +
     `  {#555555-fg}rugs:{/} {#ff4444-fg}{bold}${stats.rugsAvoided}{/bold}{/}`;
 
-  const center = `{#ffaa00-fg}x402: $${stats.x402Spent.toFixed(2)} USDC{/}`;
+  const center = `{#ffaa00-fg}mpp: $${stats.mppSpent.toFixed(2)} USDC{/}`;
 
   const right  = `{#555555-fg}uptime:{/} {#00ff88-fg}${uptime}{/} `;
 

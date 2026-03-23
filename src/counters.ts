@@ -8,7 +8,7 @@ export interface Counters {
   total_analyzed: number;
   total_signals: number;
   total_rugs_avoided: number;
-  total_x402_spent: number;
+  total_mpp_spent: number;
 }
 
 const DEFAULT: Counters = {
@@ -16,7 +16,7 @@ const DEFAULT: Counters = {
   total_analyzed: 0,
   total_signals: 0,
   total_rugs_avoided: 0,
-  total_x402_spent: 0,
+  total_mpp_spent: 0,
 };
 
 export function loadCounters(): Counters {
@@ -40,7 +40,7 @@ export function saveSession(
     analyzed: number;
     signals: number;
     rugsAvoided: number;
-    x402Spent: number;
+    mppSpent: number;
     startTime: number;
   }
 ): void {
@@ -55,7 +55,7 @@ export function saveSession(
           analyzed: sessionStats.analyzed,
           signals: sessionStats.signals,
           rugs_avoided: sessionStats.rugsAvoided,
-          x402_spent: sessionStats.x402Spent,
+          mpp_spent: sessionStats.mppSpent,
           lifetime: c,
         },
         null,

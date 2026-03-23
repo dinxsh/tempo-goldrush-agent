@@ -192,14 +192,13 @@ export function startPairStream(
       onStatus("reconnecting");
       await sleep(retryDelay);
       retryDelay = Math.min(retryDelay * 2, 8000);
-      // Retry immediately after error, no extra POLL_INTERVAL_MS delay
-      poll();
+      if (!stopped) setImmediate(poll);
       return;
     }
 
     if (!stopped) {
       await sleep(POLL_INTERVAL_MS);
-      poll();
+      if (!stopped) setImmediate(poll);
     }
   }
 
